@@ -43,7 +43,7 @@ panels = [
     panel(9, "Context per request (p50 / p95)", [(q("llamaswap_request_context_tokens", 0.5), "p50"),
                                                  (q("llamaswap_request_context_tokens", 0.95), "p95")], 0, 20),
     panel(10, "Token throughput", [("rate(llamaswap_total_output_tokens[$__rate_interval])", "generated"),
-                                   ("rate(llamaswap_total_input_tokens[$__rate_interval])", "new prompt"),
+                                   ("rate(llamaswap_total_new_prompt_tokens[$__rate_interval])", "new prompt"),
                                    ("rate(llamaswap_total_cache_tokens[$__rate_interval])", "from cache")],
           12, 20, unit="none", desc="tokens/s, from llama-swap's running totals"),
     panel(11, "Requests by HTTP status", [("sum by (code) (rate(llamaswap_request_status_total[$__rate_interval])) * 60",
@@ -56,7 +56,7 @@ panels = [
 panels[-1]["options"]["textMode"] = "name"
 
 dashboard = {
-    "title": "llama-swap requests", "uid": "llamaswap-requests", "schemaVersion": 39, "version": 1,
+    "title": "llama-swap requests", "uid": "llamaswap-requests", "schemaVersion": 39, "version": 2,
     "tags": ["llama-swap", "llm"], "time": {"from": "now-24h", "to": "now"}, "refresh": "1m",
     "templating": {"list": [{"name": "datasource", "label": "Prometheus", "type": "datasource",
                              "query": "prometheus", "current": {}, "hide": 0}]},

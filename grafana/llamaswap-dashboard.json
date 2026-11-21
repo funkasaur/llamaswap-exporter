@@ -2,7 +2,7 @@
   "title": "llama-swap requests",
   "uid": "llamaswap-requests",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "tags": [
     "llama-swap",
     "llm"
@@ -427,7 +427,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "rate(llamaswap_total_input_tokens[$__rate_interval])",
+          "expr": "rate(llamaswap_total_new_prompt_tokens[$__rate_interval])",
           "legendFormat": "new prompt"
         },
         {

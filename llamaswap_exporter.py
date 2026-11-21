@@ -17,6 +17,7 @@ Settings (environment):
                          0 = v268 and older (input_tokens counted new prompt tokens only)   (default 1)
   DEPTH_BUCKETS          context-size edges for the decode-speed "depth" label, in tokens
                          (default 8192,32768,65536,131072)
+  HISTOGRAM_MODEL_LABEL  1 = add a model label to request histograms (default 0)
 """
 import json
 import os
@@ -25,6 +26,9 @@ import time
 import urllib.request
 
 from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram, Info, start_http_server
+
+MAX_HISTOGRAM_MODELS = 32
+OTHER_MODEL = "__other__"
 
 
 def _env_int(name, default):
@@ -46,7 +50,7 @@ def _short(n):
 
 class Exporter:
     def __init__(self, base_url, api_key=None, activity_limit=200, depth_buckets="8192,32768,65536,131072",
-                 input_includes_cache=True, registry=None, fetch=None):
+                 input_includes_cache=True, registry=None, fetch=None, *, histogram_model_label=False):
         self.input_includes_cache = input_includes_cache
         self.base = base_url.rstrip("/")
         self.api_key = api_key
@@ -54,6 +58,9 @@ class Exporter:
         self.depths, self.top = _depths(depth_buckets)
         self.fetch = fetch or self._fetch
         self.seen_id = None
+        self.histogram_model_label = histogram_model_label
+        self.histogram_models = set()
+        model_labels = ["model"] if histogram_model_label else []
         r = self.registry = registry or CollectorRegistry()
 
         self.up = Gauge("llamaswap_exporter_up", "1 if the last poll of llama-swap's activity API succeeded",
@@ -64,6 +71,7 @@ class Exporter:
                                  "Total prompt tokens as llama-swap counts them (v269+: cache included)", registry=r)
         self.total_output = Gauge("llamaswap_total_output_tokens", "Total generated tokens", registry=r)
         self.total_cache = Gauge("llamaswap_total_cache_tokens", "Total prompt tokens served from cache", registry=r)
+        self.total_new_prompt = Gauge("llamaswap_total_new_prompt_tokens", "Total uncached prompt tokens", registry=r)
 
         self.last_duration_ms = Gauge("llamaswap_last_request_duration_ms", "Duration of the most recent request",
                                       registry=r)
@@ -75,17 +83,20 @@ class Exporter:
 
         self.decode_tps = Histogram("llamaswap_request_decode_tps",
                                     "Generation tokens/s per request (>= 16 output tokens), by context depth",
-                                    ["depth"], buckets=(10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 120, 150, 200, 300),
+                                    ["depth"] + model_labels,
+                                    buckets=(10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 120, 150, 200, 300),
                                     registry=r)
         self.prefill_tps = Histogram("llamaswap_request_prefill_tps",
                                      "Prompt tokens/s per request (>= 256 new prompt tokens)",
-                                     buckets=(100, 250, 500, 750, 1000, 1500, 2000, 3000, 5000, 10000), registry=r)
+                                     model_labels, buckets=(100, 250, 500, 750, 1000, 1500, 2000, 3000, 5000, 10000),
+                                     registry=r)
         self.prefill_s = Histogram("llamaswap_request_prefill_seconds",
                                    "New prompt tokens / prompt speed: approx. time to first token",
-                                   buckets=(0.1, 0.25, 0.5, 1, 2, 5, 10, 20, 40, 80, 160), registry=r)
+                                   model_labels, buckets=(0.1, 0.25, 0.5, 1, 2, 5, 10, 20, 40, 80, 160), registry=r)
         self.duration_s = Histogram("llamaswap_request_duration_seconds", "Whole request duration",
-                                    buckets=(1, 2, 5, 10, 20, 40, 60, 120, 300, 600, 1200), registry=r)
+                                    model_labels, buckets=(1, 2, 5, 10, 20, 40, 60, 120, 300, 600, 1200), registry=r)
         self.context_tok = Histogram("llamaswap_request_context_tokens", "Context per request: cached + new prompt",
+                                     model_labels,
                                      buckets=(1024, 4096, 8192, 16384, 32768, 65536, 98304, 131072, 196608, 262144),
                                      registry=r)
         self.draft_total = Counter("llamaswap_request_draft_tokens", "Speculative draft tokens proposed", registry=r)
@@ -95,9 +106,10 @@ class Exporter:
         self.missed = Counter("llamaswap_exporter_missed_requests",
                               "Requests that finished between polls but fell off the activity page", registry=r)
         # Start labelled series at 0 so rate() sees the first request.
-        for _, label in self.depths:
-            self.decode_tps.labels(label)
-        self.decode_tps.labels(self.top)
+        if not histogram_model_label:
+            for _, label in self.depths:
+                self.decode_tps.labels(label)
+            self.decode_tps.labels(self.top)
         self.status.labels("200")
 
     def _fetch(self, path):
@@ -110,12 +122,25 @@ class Exporter:
     def depth_label(self, n):
         return next((label for edge, label in self.depths if n < edge), self.top)
 
+    def model_label(self, record):
+        if not self.histogram_model_label:
+            return ()
+        model = str(record.get("model") or "unknown")
+        if model not in self.histogram_models:
+            if len(self.histogram_models) >= MAX_HISTOGRAM_MODELS:
+                return (OTHER_MODEL,)
+            if model != OTHER_MODEL:
+                self.histogram_models.add(model)
+        return (model,)
+
     def observe(self, records):
         """Record activity entries newer than the last seen id. The first poll only sets the baseline."""
-        ids = [r.get("id", 0) for r in records]
+        latest_id = max((r.get("id", 0) for r in records), default=0)
         if self.seen_id is None:
-            self.seen_id = max(ids, default=0)
+            self.seen_id = latest_id
             return
+        if latest_id < self.seen_id:
+            self.seen_id = 0
         new = sorted((r for r in records if r.get("id", 0) > self.seen_id), key=lambda x: x.get("id", 0))
         if new and len(records) >= self.limit and new[0].get("id", 0) > self.seen_id + 1:
             # The whole page is new and doesn't reach back to the last seen id: some requests were skipped.
@@ -130,26 +155,34 @@ class Exporter:
             else:
                 ctx, prompt = given + cached, given
             self.status.labels(str(r.get("resp_status_code", 0))).inc()
-            self.duration_s.observe(r.get("duration_ms", 0) / 1000)
-            self.context_tok.observe(ctx)
+            model = self.model_label(r)
+            duration = self.duration_s.labels(*model) if model else self.duration_s
+            context = self.context_tok.labels(*model) if model else self.context_tok
+            duration.observe(r.get("duration_ms", 0) / 1000)
+            context.observe(ctx)
             if out >= 16 and tps > 0:
-                self.decode_tps.labels(self.depth_label(ctx)).observe(tps)
+                self.decode_tps.labels(self.depth_label(ctx), *model).observe(tps)
             if prompt >= 256 and pps > 0:
-                self.prefill_tps.observe(pps)
+                speed = self.prefill_tps.labels(*model) if model else self.prefill_tps
+                speed.observe(pps)
             if prompt > 0 and pps > 0:
-                self.prefill_s.observe(prompt / pps)
+                duration = self.prefill_s.labels(*model) if model else self.prefill_s
+                duration.observe(prompt / pps)
             self.draft_total.inc(max(t.get("draft_tokens", 0) or 0, 0))
             self.draft_acc.inc(max(t.get("draft_acc_tokens", 0) or 0, 0))
-        self.seen_id = max(self.seen_id, max(ids, default=0))
+        self.seen_id = latest_id
 
     def poll(self):
         ok = True
         try:
             stats = self.fetch("/api/metrics/stats")
             self.total_requests.set(stats.get("total_requests", 0))
-            self.total_input.set(stats.get("total_input_tokens", 0))
+            input_tokens = stats.get("total_input_tokens", 0)
+            cache_tokens = stats.get("total_cache_tokens", 0)
+            self.total_input.set(input_tokens)
             self.total_output.set(stats.get("total_output_tokens", 0))
-            self.total_cache.set(stats.get("total_cache_tokens", 0))
+            self.total_cache.set(cache_tokens)
+            self.total_new_prompt.set(max(input_tokens - cache_tokens, 0) if self.input_includes_cache else input_tokens)
         except Exception as e:  # keep serving the last values
             ok = False
             print(f"stats poll failed: {e}", file=sys.stderr, flush=True)
@@ -175,7 +208,8 @@ def main():
                         api_key=os.environ.get("LLAMASWAP_API_KEY") or None,
                         activity_limit=_env_int("ACTIVITY_LIMIT", 200),
                         depth_buckets=os.environ.get("DEPTH_BUCKETS", "8192,32768,65536,131072"),
-                        input_includes_cache=os.environ.get("INPUT_INCLUDES_CACHE", "1") != "0")
+                        input_includes_cache=os.environ.get("INPUT_INCLUDES_CACHE", "1") != "0",
+                        histogram_model_label=os.environ.get("HISTOGRAM_MODEL_LABEL") == "1")
     listen, port = os.environ.get("EXPORTER_LISTEN", "0.0.0.0"), _env_int("EXPORTER_PORT", 9105)
     interval = float(os.environ.get("POLL_INTERVAL", "15"))
     start_http_server(port, addr=listen, registry=exporter.registry)

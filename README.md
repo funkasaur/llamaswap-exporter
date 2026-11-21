@@ -21,12 +21,13 @@ token". Scrape both: llama-swap's `/metrics` for hardware, this exporter for req
 | --- | --- | --- |
 | `llamaswap_request_decode_tps{depth}` | histogram | generation tokens/s per request (>= 16 output tokens), by context depth |
 | `llamaswap_request_prefill_tps` | histogram | prompt tokens/s per request (>= 256 new prompt tokens) |
-| `llamaswap_request_prefill_seconds` | histogram | new prompt tokens / prompt speed: approximate time to first token |
+| `llamaswap_request_prefill_seconds` | histogram | approximate time to first token for any positive new prompt length and prompt speed. The speed histogram has a 256-token minimum to filter short samples |
 | `llamaswap_request_duration_seconds` | histogram | whole request duration |
 | `llamaswap_request_context_tokens` | histogram | whole prompt per request (cached + new) |
 | `llamaswap_request_draft_tokens_total`, `..._draft_accepted_tokens_total` | counter | speculative decoding (draft model or MTP) |
 | `llamaswap_request_status_total{code}` | counter | finished requests by HTTP status |
 | `llamaswap_total_requests`, `_total_input_tokens`, `_total_output_tokens`, `_total_cache_tokens` | gauge | llama-swap's running totals (gauges: they restart if its store is reset) |
+| `llamaswap_total_new_prompt_tokens` | gauge | uncached prompt total, normalized using `INPUT_INCLUDES_CACHE` |
 | `llamaswap_last_request_{duration_ms,tokens_per_second,prompt_per_second}` | gauge | the most recent request |
 | `llamaswap_active_model_info{model}` | info | model of the most recent request |
 | `llamaswap_exporter_up` | gauge | 1 if the last poll worked |
@@ -64,6 +65,7 @@ LLAMASWAP_URL=http://127.0.0.1:8080 python3 llamaswap_exporter.py
 | `POLL_INTERVAL` | `15` | seconds between polls |
 | `ACTIVITY_LIMIT` | `200` | activity records read per poll (llama-swap allows 1-999) |
 | `INPUT_INCLUDES_CACHE` | `1` | llama-swap v269 and newer count the whole prompt (cache included) in `input_tokens`; set `0` for v268 and older, which counted only new prompt tokens |
+| `HISTOGRAM_MODEL_LABEL` | `0` | set to `1` to label request histograms by model. The exporter labels the first 32 observed models separately and groups further models under the reserved label value `__other__` until exporter restart |
 | `DEPTH_BUCKETS` | `8192,32768,65536,131072` | context-size edges for the `depth` label (gives `0-8k`, `8k-32k`, ..., `128k+`) |
 
 If `llamaswap_exporter_missed_requests_total` grows, more requests finished between two polls than one activity

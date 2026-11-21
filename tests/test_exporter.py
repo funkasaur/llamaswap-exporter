@@ -45,6 +45,7 @@ class ExporterTests(unittest.TestCase):
         self.assertTrue(self.x.poll())
         self.assertEqual(self.value("llamaswap_request_duration_seconds_count"), 0)
         self.assertEqual(self.value("llamaswap_total_requests"), 3)
+        self.assertEqual(self.value("llamaswap_total_new_prompt_tokens"), 90)
         self.assertEqual(self.value("llamaswap_exporter_up"), 1)
         self.assertEqual(self.api.paths, ["/api/metrics/stats", "/api/metrics/activity?limit=5"])
 
@@ -74,6 +75,27 @@ class ExporterTests(unittest.TestCase):
         self.assertEqual(self.value("llamaswap_exporter_missed_requests_total"), 8)
         self.assertEqual(self.value("llamaswap_request_duration_seconds_count"), 5)
 
+    def test_activity_resumes_after_ids_go_backwards(self):
+        self.api.records = [record(100)]
+        self.x.poll()
+        self.api.records = [record(1), record(2)]
+        self.x.poll()
+        self.x.poll()
+        self.assertEqual(self.x.seen_id, 2)
+        self.assertEqual(self.value("llamaswap_request_duration_seconds_count"), 2)
+
+    def test_optional_model_labels_are_bounded(self):
+        x = lx.Exporter("http://swap", histogram_model_label=True, fetch=self.api)
+        x.observe([])
+        x.observe([record(i + 1, model=f"model-{i}") for i in range(lx.MAX_HISTOGRAM_MODELS + 2)])
+        metrics = x.registry
+        self.assertEqual(metrics.get_sample_value("llamaswap_request_duration_seconds_count", {"model": "model-0"}), 1)
+        self.assertEqual(metrics.get_sample_value("llamaswap_request_duration_seconds_count",
+                                                  {"model": lx.OTHER_MODEL}), 2)
+        self.assertEqual(metrics.get_sample_value("llamaswap_request_decode_tps_count",
+                                                  {"model": "model-0", "depth": "0-8k"}), 1)
+        self.assertEqual(len(x.histogram_models), lx.MAX_HISTOGRAM_MODELS)
+
     def test_failure_sets_up_zero_and_keeps_values(self):
         self.x.poll()
         self.api.fail = True
@@ -88,6 +110,7 @@ class ExporterTests(unittest.TestCase):
         x.poll()
         value = lambda name: x.registry.get_sample_value(name, {})
         self.assertEqual(value("llamaswap_request_context_tokens_sum"), 50000)
+        self.assertEqual(value("llamaswap_total_new_prompt_tokens"), 100)
         self.assertEqual(value("llamaswap_request_prefill_seconds_sum"), 40000 / 800)
 
     def test_depth_labels_from_config(self):
