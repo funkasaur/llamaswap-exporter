@@ -1,9 +1,35 @@
-# llamaswap-exporter
+<h1 align="center">llamaswap-exporter</h1>
+
+<p align="center">Expose per-request llama-swap metrics to Prometheus.</p>
+
+<p align="center">
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/funkasaur/llamaswap-exporter"></a>
+  <a href="https://github.com/funkasaur/llamaswap-exporter/commits/"><img alt="Last commit" src="https://img.shields.io/github/last-commit/funkasaur/llamaswap-exporter"></a>
+</p>
+
+## Overview
 
 Prometheus metrics for the requests [llama-swap](https://github.com/mostlygeek/llama-swap) serves: per-request
 decode and prefill speed, approximate time to first token, duration, context size, speculative-draft acceptance,
 HTTP status, token totals and the most recently used model. One small Python process, one dependency
 (`prometheus-client`), plus a ready Grafana dashboard.
+
+## Features
+
+- Tracks decode and prefill speed, latency, context size and speculative drafting.
+- Ships a Grafana dashboard and Prometheus configuration examples.
+
+## Repository structure
+
+```text
+llamaswap-exporter/
+├── llamaswap_exporter.py  # Exporter and activity polling
+├── requirements.txt       # Python dependency
+├── Dockerfile             # Container build
+├── examples/              # Compose and scrape examples
+├── grafana/               # Dashboard
+└── tests/                 # Offline unit tests
+```
 
 ## What this adds over llama-swap's own `/metrics`
 
